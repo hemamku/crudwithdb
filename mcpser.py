@@ -17,7 +17,7 @@ def get_conn():
             dbname="orchestrate_db",
             user="hemdurai",   # keep your working DB user
             password="",
-            host="localhost",
+            host=os.getenv("DB_HOST", "localhost"),
             port="5432",
             cursor_factory=RealDictCursor
         )
