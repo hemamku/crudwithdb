@@ -2,148 +2,181 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
 import os
 
+load_dotenv()
+
 app = FastAPI(
-    title="PostgreSQL CRUD API",
-    version="1.0.0"
+    title="PostgreSQL MCP CRUD API",
+    version="1.0.0",
+    description="MCP-compatible FastAPI service for performing CRUD operations on a PostgreSQL database used by IBM Orchestrate agents."
 )
 
+# -----------------------------
+# DATABASE CONFIG
+# -----------------------------
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise Exception("DATABASE_URL not set")
 
-# -----------------------------
-# DB CONNECTION
-# -----------------------------
+print("DB URL:", DATABASE_URL)
 def get_conn():
+    """
+    Creates a new PostgreSQL connection.
+    Used by MCP tools to execute CRUD operations.
+    """
     return psycopg2.connect(
         DATABASE_URL,
-        cursor_factory=RealDictCursor,
-        sslmode="require"
+        cursor_factory=RealDictCursor
     )
 
+
 # -----------------------------
-# MODEL
+# DATA MODEL
 # -----------------------------
 class User(BaseModel):
     name: str
 
+
 # -----------------------------
-# INIT DB
+# INIT DB (startup)
 # -----------------------------
 @app.on_event("startup")
 def init_db():
+    """
+    Initializes users table if it does not exist.
+    Runs once when FastAPI server starts.
+    """
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            );
+        """)
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-    """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
 
 # -----------------------------
 # CREATE USER
 # -----------------------------
-@app.post("/users", description="Create a new user in PostgreSQL database")
+@app.post(
+    "/users",
+    description="Create a new user in PostgreSQL database via MCP FastAPI service."
+)
 def create_user(user: User):
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (name) VALUES (%s) RETURNING id;",
+            (user.name,)
+        )
+        user_id = cur.fetchone()["id"]
+        conn.commit()
+        return {"id": user_id, "name": user.name}
+    finally:
+        cur.close()
+        conn.close()
 
-    cur.execute(
-        "INSERT INTO users (name) VALUES (%s) RETURNING id;",
-        (user.name,)
-    )
-
-    user_id = cur.fetchone()["id"]
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"id": user_id, "name": user.name}
 
 # -----------------------------
-# GET USERS
+# GET ALL USERS
 # -----------------------------
-@app.get("/users", description="Fetch all users from PostgreSQL database")
+@app.get(
+    "/users",
+    description="Fetch all users from PostgreSQL database via MCP FastAPI service."
+)
 def get_users():
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM users ORDER BY id;")
+        rows = cur.fetchall()
+        return rows
+    finally:
+        cur.close()
+        conn.close()
 
-    cur.execute("SELECT id, name FROM users ORDER BY id;")
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return rows
 
 # -----------------------------
-# GET USER
+# GET USER BY ID
 # -----------------------------
-@app.get("/users/{user_id}", description="Fetch a single user by ID")
+@app.get(
+    "/users/{user_id}",
+    description="Fetch a single user by ID from PostgreSQL database."
+)
 def get_user(user_id: int):
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM users WHERE id=%s;", (user_id,))
+        row = cur.fetchone()
 
-    cur.execute("SELECT id, name FROM users WHERE id=%s;", (user_id,))
-    row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    cur.close()
-    conn.close()
+        return row
+    finally:
+        cur.close()
+        conn.close()
 
-    if not row:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return row
 
 # -----------------------------
 # UPDATE USER
 # -----------------------------
-@app.put("/users/{user_id}", description="Update an existing user by ID")
+@app.put(
+    "/users/{user_id}",
+    description="Update an existing user in PostgreSQL database via MCP FastAPI service."
+)
 def update_user(user_id: int, user: User):
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET name=%s WHERE id=%s RETURNING id;",
+            (user.name, user_id)
+        )
+        updated = cur.fetchone()
+        conn.commit()
 
-    cur.execute(
-        "UPDATE users SET name=%s WHERE id=%s RETURNING id;",
-        (user.name, user_id)
-    )
+        if not updated:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    updated = cur.fetchone()
+        return {"id": user_id, "name": user.name}
+    finally:
+        cur.close()
+        conn.close()
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    if not updated:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {"id": user_id, "name": user.name}
 
 # -----------------------------
 # DELETE USER
 # -----------------------------
-@app.delete("/users/{user_id}", description="Delete a user by ID")
+@app.delete(
+    "/users/{user_id}",
+    description="Delete a user from PostgreSQL database via MCP FastAPI service."
+)
 def delete_user(user_id: int):
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM users WHERE id=%s RETURNING id;",
+            (user_id,)
+        )
+        deleted = cur.fetchone()
+        conn.commit()
 
-    cur.execute("DELETE FROM users WHERE id=%s RETURNING id;", (user_id,))
-    deleted = cur.fetchone()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    if not deleted:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {"message": f"User {user_id} deleted"}
+        return {"message": f"User {user_id} deleted"}
+    finally:
+        cur.close()
+        conn.close()
